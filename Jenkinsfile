@@ -44,7 +44,8 @@ pipeline {
     }
 
     environment {
-        DOCKERHUB      = credentials('dockerhub-creds')   // fournit DOCKERHUB_USR et DOCKERHUB_PSW
+        // Le credential Docker Hub n'est lu QUE dans les stages Docker : les branches feature/* n'en dépendent pas
+        DOCKERHUB_CREDS = 'dockerhub-creds'
         TAG            = "${env.BUILD_NUMBER}"
         SONAR_KEY      = 'DevOps-AppGestionDesProjets'
         COMPOSE_PROJECT = 'gestion-projets'
@@ -62,8 +63,6 @@ pipeline {
                     env.GIT_SHORT   = sh(script: 'git rev-parse --short HEAD', returnStdout: true).trim()
                     env.GIT_AUTHOR  = sh(script: 'git log -1 --format=%an', returnStdout: true).trim()
                     env.GIT_MESSAGE = sh(script: 'git log -1 --format=%s', returnStdout: true).trim()
-                    env.BACKEND_IMAGE  = "${DOCKERHUB_USR}/gp-backend"
-                    env.FRONTEND_IMAGE = "${DOCKERHUB_USR}/gp-frontend"
                     currentBuild.description = "${env.BRANCH_NAME} @ ${env.GIT_SHORT}"
                 }
             }
@@ -79,7 +78,7 @@ pipeline {
                  Commit       : ${env.GIT_SHORT}
                  Auteur       : ${env.GIT_AUTHOR}
                  Message      : ${env.GIT_MESSAGE}
-                 Images       : ${env.BACKEND_IMAGE}:${env.TAG} / ${env.FRONTEND_IMAGE}:${env.TAG}
+                 Images       : <compte Docker Hub>/gp-backend:${env.TAG} et gp-frontend:${env.TAG}
                  Livraison    : ${env.BRANCH_NAME == 'main' ? 'OUI (push Docker Hub + déploiement)' : 'NON (intégration seulement)'}
                 ============================================================
                 """
@@ -177,6 +176,23 @@ pipeline {
         }
 
         // ---------------------------------------------------------------- 9
+        stage('Compte Docker Hub') {
+            when { anyOf { branch 'main'; branch 'develop' } }
+            steps {
+                echo '==> Lecture du compte Docker Hub (credential Jenkins dockerhub-creds)'
+                // seul le pseudo (non secret) est gardé ; le token reste dans le credential
+                withCredentials([usernamePassword(credentialsId: env.DOCKERHUB_CREDS,
+                        usernameVariable: 'DH_USER', passwordVariable: 'DH_TOKEN')]) {
+                    script {
+                        env.DOCKERHUB_USER = env.DH_USER
+                        env.BACKEND_IMAGE  = "${env.DH_USER}/gp-backend"
+                        env.FRONTEND_IMAGE = "${env.DH_USER}/gp-frontend"
+                    }
+                }
+                echo "Images : ${env.BACKEND_IMAGE}:${env.TAG} et ${env.FRONTEND_IMAGE}:${env.TAG}"
+            }
+        }
+
         stage('Docker Build') {
             when { anyOf { branch 'main'; branch 'develop' } }
             parallel {
@@ -215,14 +231,17 @@ pipeline {
             when { branch 'main' }
             steps {
                 echo '==> Publication des images sur Docker Hub (tag du build + latest)'
-                sh '''
-                    echo "$DOCKERHUB_PSW" | docker login -u "$DOCKERHUB_USR" --password-stdin
-                    docker push $BACKEND_IMAGE:$TAG
-                    docker push $BACKEND_IMAGE:latest
-                    docker push $FRONTEND_IMAGE:$TAG
-                    docker push $FRONTEND_IMAGE:latest
-                '''
-                echo "Images visibles sur https://hub.docker.com/u/${DOCKERHUB_USR}"
+                withCredentials([usernamePassword(credentialsId: env.DOCKERHUB_CREDS,
+                        usernameVariable: 'DH_USER', passwordVariable: 'DH_TOKEN')]) {
+                    sh '''
+                        echo "$DH_TOKEN" | docker login -u "$DH_USER" --password-stdin
+                        docker push $BACKEND_IMAGE:$TAG
+                        docker push $BACKEND_IMAGE:latest
+                        docker push $FRONTEND_IMAGE:$TAG
+                        docker push $FRONTEND_IMAGE:latest
+                    '''
+                }
+                echo "Images visibles sur https://hub.docker.com/u/${env.DOCKERHUB_USER}"
             }
             post {
                 always {
@@ -239,7 +258,6 @@ pipeline {
                 withCredentials([string(credentialsId: 'mysql-root-password', variable: 'MYSQL_ROOT_PASSWORD')]) {
                     // -p fixe le nom du projet Compose : chaque déploiement remplace le précédent
                     sh '''
-                        export DOCKERHUB_USER=$DOCKERHUB_USR
                         docker compose -p $COMPOSE_PROJECT up -d --no-build
                         docker compose -p $COMPOSE_PROJECT ps
                     '''
@@ -285,11 +303,26 @@ pipeline {
         }
         failure {
             echo "ÉCHEC – ${env.BRANCH_NAME} @ ${env.GIT_SHORT} : voir le stage en rouge et sa Console Output"
-            sh "docker compose -p ${COMPOSE_PROJECT} logs --tail 30 backend || true"
+            script {
+                // le nettoyage ne doit jamais masquer l'erreur d'origine
+                try {
+                    if (env.BRANCH_NAME == 'main') {
+                        sh "docker compose -p ${env.COMPOSE_PROJECT} logs --tail 30 backend || true"
+                    }
+                } catch (err) {
+                    echo "Logs du backend indisponibles : ${err.message}"
+                }
+            }
         }
         always {
-            // supprime les images intermédiaires inutiles (libère du disque dans la VM)
-            sh 'docker image prune -f || true'
+            script {
+                // supprime les images intermédiaires inutiles (libère du disque dans la VM)
+                try {
+                    sh 'docker image prune -f || true'
+                } catch (err) {
+                    echo "Nettoyage Docker ignoré : ${err.message}"
+                }
+            }
         }
     }
 }

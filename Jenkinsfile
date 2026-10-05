@@ -24,7 +24,7 @@
 //    - dockerhub_rickknd    Username with password (pseudo Docker Hub + ACCESS TOKEN)
 //    - mysql-root-password  Secret text (mot de passe root de la base déployée)
 //    - token SonarQube      déjà relié au serveur « sonarqube » (Configurer le système)
-//  Prérequis VM : mysql-db (~/ma-stack) démarré pour les tests d'intégration,
+//  Prérequis VM : (les tests utilisent une base H2 en mémoire, aucun MySQL requis)
 //                 utilisateur jenkins dans le groupe docker.
 // =====================================================================================
 pipeline {
@@ -114,7 +114,7 @@ pipeline {
         // ---------------------------------------------------------------- 5
         stage('Tests + JaCoCo') {
             steps {
-                echo '==> Tests unitaires (Mockito) + test de démarrage Spring (MySQL), couverture JaCoCo'
+                echo '==> Tests unitaires (Mockito) + test de démarrage Spring (base H2 en mémoire), couverture JaCoCo'
                 dir('backend') {
                     sh './mvnw -B test'
                     sh '''

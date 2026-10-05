@@ -273,19 +273,19 @@ pipeline {
                 sh '''
                     echo "Attente du démarrage du backend (jusqu'à 2 min)..."
                     for i in $(seq 1 24); do
-                        if curl -sf http://$APP_HOST:8089/entreprise > /dev/null; then
+                        if curl -sf http://$APP_HOST:8089/entreprise/all > /dev/null; then
                             echo "Backend OK après $((i * 5)) s"
                             break
                         fi
                         sleep 5
                     done
-                    echo "--- API  : GET /entreprise"
-                    curl -sf http://$APP_HOST:8089/entreprise
+                    echo "--- API  : GET /entreprise/all"
+                    curl -sf http://$APP_HOST:8089/entreprise/all
                     echo
                     echo "--- Front : page d'accueil (via nginx)"
                     curl -sf -o /dev/null -w "HTTP %{http_code}\\n" http://$APP_HOST:4200/
                     echo "--- Front -> API : proxy /api"
-                    curl -sf -o /dev/null -w "HTTP %{http_code}\\n" http://$APP_HOST:4200/api/entreprise
+                    curl -sf -o /dev/null -w "HTTP %{http_code}\\n" http://$APP_HOST:4200/api/entreprise/all
                 '''
             }
         }

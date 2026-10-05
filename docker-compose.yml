@@ -1,0 +1,46 @@
+# Déploiement de l'application : 3 conteneurs (base, API, front)
+# Variables attendues (fichier .env local ou injectées par Jenkins) :
+#   DOCKERHUB_USER, MYSQL_ROOT_PASSWORD, TAG (facultatif, latest par défaut)
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: gp-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: test_db
+    volumes:
+      - gp-mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h localhost -p$$MYSQL_ROOT_PASSWORD"]
+      interval: 5s
+      retries: 20
+
+  backend:
+    image: ${DOCKERHUB_USER}/gp-backend:${TAG:-latest}
+    build: ./backend
+    container_name: gp-backend
+    restart: unless-stopped
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:mysql://mysql:3306/test_db?createDatabaseIfNotExist=true
+      SPRING_DATASOURCE_USERNAME: root
+      SPRING_DATASOURCE_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      JAVA_TOOL_OPTIONS: -Xmx384m
+    ports:
+      - "8089:8080"   # 8080 est pris par Jenkins dans la VM
+    depends_on:
+      mysql:
+        condition: service_healthy
+
+  frontend:
+    image: ${DOCKERHUB_USER}/gp-frontend:${TAG:-latest}
+    build: ./frontend
+    container_name: gp-frontend
+    restart: unless-stopped
+    ports:
+      - "4200:80"
+    depends_on:
+      - backend
+
+volumes:
+  gp-mysql-data:

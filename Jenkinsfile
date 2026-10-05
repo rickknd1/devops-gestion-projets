@@ -21,7 +21,7 @@
 //   12. Smoke Tests         vérification que l'API et le front répondent
 //
 //  Aucun secret dans ce fichier. Credentials Jenkins attendus :
-//    - dockerhub-creds      Username with password (pseudo Docker Hub + ACCESS TOKEN)
+//    - dockerhub_rickknd    Username with password (pseudo Docker Hub + ACCESS TOKEN)
 //    - mysql-root-password  Secret text (mot de passe root de la base déployée)
 //    - token SonarQube      déjà relié au serveur « sonarqube » (Configurer le système)
 //  Prérequis VM : mysql-db (~/ma-stack) démarré pour les tests d'intégration,
@@ -45,7 +45,7 @@ pipeline {
 
     environment {
         // Le credential Docker Hub n'est lu QUE dans les stages Docker : les branches feature/* n'en dépendent pas
-        DOCKERHUB_CREDS = 'dockerhub-creds'
+        DOCKERHUB_CREDS = 'dockerhub_rickknd'
         TAG            = "${env.BUILD_NUMBER}"
         SONAR_KEY      = 'DevOps-AppGestionDesProjets'
         COMPOSE_PROJECT = 'gestion-projets'
@@ -179,7 +179,7 @@ pipeline {
         stage('Compte Docker Hub') {
             when { anyOf { branch 'main'; branch 'develop' } }
             steps {
-                echo '==> Lecture du compte Docker Hub (credential Jenkins dockerhub-creds)'
+                echo '==> Lecture du compte Docker Hub (credential Jenkins dockerhub_rickknd)'
                 // seul le pseudo (non secret) est gardé ; le token reste dans le credential
                 withCredentials([usernamePassword(credentialsId: env.DOCKERHUB_CREDS,
                         usernameVariable: 'DH_USER', passwordVariable: 'DH_TOKEN')]) {

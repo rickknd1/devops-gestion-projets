@@ -51,8 +51,10 @@ services:
       - monitoring
 
   # Métriques par conteneur : Jenkins livre gp-*, SonarQube, minikube...
+  # >= v0.54.1 obligatoire avec Docker 29 (image store containerd) : avant, aucun conteneur n'est nommé
+  # Les nouvelles versions sont publiées sur ghcr.io, plus sur gcr.io
   cadvisor:
-    image: gcr.io/cadvisor/cadvisor:v0.49.1
+    image: ghcr.io/google/cadvisor:v0.60.6
     container_name: mon-cadvisor
     restart: unless-stopped
     privileged: true

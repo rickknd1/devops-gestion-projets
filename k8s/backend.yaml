@@ -1,0 +1,99 @@
+# Backend Spring Boot sur Kubernetes (namespace devops), déployé par le stage « Deploy Backend »
+# Le pipeline remplace l'image par celle du build : <compte>/gp-backend:<numéro de build>
+#
+# Prérequis (une seule fois, hors Git car ce sont des secrets) :
+#   - MySQL déployé dans le namespace devops (atelier 8 : mysql-service, base springdb)
+#   - kubectl create secret generic spring-secret -n devops \
+#       --from-literal=SPRING_DATASOURCE_USERNAME=<user> --from-literal=SPRING_DATASOURCE_PASSWORD=<mot de passe>
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: spring-config
+  namespace: devops
+data:
+  SPRING_DATASOURCE_URL: jdbc:mysql://mysql-service:3306/springdb
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: spring
+  namespace: devops
+spec:
+  replicas: 2
+  # Mise à jour un pod à la fois, sans pod supplémentaire : l'autre réplica sert pendant ce temps
+  # (zéro coupure sans consommer plus de RAM dans Minikube)
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 0
+      maxUnavailable: 1
+  selector:
+    matchLabels:
+      app: spring
+  template:
+    metadata:
+      labels:
+        app: spring
+    spec:
+      containers:
+        - name: spring
+          image: rickknd/gp-backend:latest
+          ports:
+            - containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: spring-config
+            - secretRef:
+                name: spring-secret
+          env:
+            - name: JAVA_TOOL_OPTIONS
+              value: -Xmx320m
+          resources:
+            requests:
+              memory: 256Mi
+              cpu: 100m
+            limits:
+              memory: 640Mi
+          # Le Service n'envoie du trafic au pod qu'une fois Spring prêt (base joignable comprise)
+          readinessProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8080
+            initialDelaySeconds: 20
+            periodSeconds: 5
+            failureThreshold: 24
+          # Redémarre le conteneur s'il ne répond plus du tout
+          livenessProbe:
+            tcpSocket:
+              port: 8080
+            initialDelaySeconds: 90
+            periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: spring-service
+  namespace: devops
+spec:
+  type: NodePort
+  selector:
+    app: spring
+  ports:
+    - port: 8080
+      targetPort: 8080
+      nodePort: 30081
+---
+# Alias interne : le nginx de l'image gp-frontend envoie /api/ vers « backend:8080 »
+# (nom du service Docker Compose). Ce Service permet d'utiliser la même image dans Kubernetes.
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend
+  namespace: devops
+spec:
+  type: ClusterIP
+  selector:
+    app: spring
+  ports:
+    - port: 8080
+      targetPort: 8080

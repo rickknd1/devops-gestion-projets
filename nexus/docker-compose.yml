@@ -1,0 +1,18 @@
+# Nexus Repository : dépôt d'artefacts Maven, alimenté par le stage « Deploy to Nexus »
+# Lancement dans la VM :  cd nexus && docker compose up -d   (premier démarrage : 2 à 3 min)
+# Mot de passe admin initial :  docker exec nexus cat /nexus-data/admin.password
+services:
+  nexus:
+    image: sonatype/nexus3:latest
+    container_name: nexus
+    restart: unless-stopped
+    environment:
+      # Nexus réserve ~2,7 Go par défaut : on le limite pour cohabiter avec Jenkins, SonarQube et Minikube
+      INSTALL4J_ADD_VM_PARAMS: "-Xms512m -Xmx1g -XX:MaxDirectMemorySize=1g -Djava.util.prefs.userRoot=/nexus-data/javaprefs"
+    ports:
+      - "8081:8081"
+    volumes:
+      - nexus-data:/nexus-data
+
+volumes:
+  nexus-data:

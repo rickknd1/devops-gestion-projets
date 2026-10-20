@@ -30,7 +30,7 @@
 //    - token SonarQube      déjà relié au serveur « sonarqube » (Configurer le système)
 //  Prérequis VM : (les tests utilisent une base H2 en mémoire, aucun MySQL requis)
 //                 utilisateur jenkins dans le groupe docker ;
-//                 kubeconfig de Minikube dans /var/lib/jenkins/.kube/config ;
+//                 kubeconfig de Minikube dans /var/lib/jenkins/.kube/config (Minikube, driver docker) ;
 //                 Secret spring-secret et MySQL déjà présents dans le namespace devops (atelier 8).
 // =====================================================================================
 pipeline {
@@ -308,6 +308,9 @@ pipeline {
                 sh '''
                     kubectl get namespace $K8S_NAMESPACE
                     kubectl get secret spring-secret -n $K8S_NAMESPACE > /dev/null
+                    # L'image vient d'être construite sur cette VM : on la transmet directement à Minikube
+                    # (quelques secondes) au lieu de la retélécharger depuis Docker Hub, trop lent ici
+                    docker save --platform linux/amd64 $BACKEND_IMAGE:$TAG | docker exec -i minikube ctr -n k8s.io images import -
                     sed "s#image: .*gp-backend.*#image: $BACKEND_IMAGE:$TAG#" k8s/backend.yaml | kubectl apply -f -
                     kubectl rollout status deployment/spring -n $K8S_NAMESPACE --timeout=420s
                     kubectl get pods -n $K8S_NAMESPACE -l app=spring -o wide
@@ -327,6 +330,7 @@ pipeline {
             steps {
                 echo "==> Déploiement du frontend sur Kubernetes : ${FRONTEND_IMAGE}:${TAG}"
                 sh '''
+                    docker save --platform linux/amd64 $FRONTEND_IMAGE:$TAG | docker exec -i minikube ctr -n k8s.io images import -
                     sed "s#image: .*gp-frontend.*#image: $FRONTEND_IMAGE:$TAG#" k8s/frontend.yaml | kubectl apply -f -
                     kubectl rollout status deployment/frontend -n $K8S_NAMESPACE --timeout=300s
                     kubectl get pods,svc -n $K8S_NAMESPACE

@@ -13,19 +13,25 @@
 //    8. Package             création du jar exécutable, archivé dans Jenkins
 //
 //  Livraison continue (develop et main)
-//    9. Docker Build        images backend + frontend construites en parallèle
+//    9. Deploy to Nexus     publication du jar dans Nexus (version 1.0.<build>) – main uniquement
+//   10. Docker Build        images backend + frontend construites en parallèle
 //
 //  Déploiement continu (main uniquement)
-//   10. Docker Push         publication des images sur Docker Hub
-//   11. Deploy              lancement des 3 conteneurs (mysql, backend, frontend)
-//   12. Smoke Tests         vérification que l'API et le front répondent
+//   11. Docker Push         publication des images sur Docker Hub
+//   12. Deploy Compose      lancement des 3 conteneurs (mysql, backend, frontend) sur la VM
+//   13. Deploy Backend      Spring sur Kubernetes (Minikube) : rolling update + rollback si échec
+//   14. Deploy Frontend     Angular/nginx sur Kubernetes (Minikube)
+//   15. Smoke Tests         vérification que l'API et le front répondent (Compose et Kubernetes)
 //
 //  Aucun secret dans ce fichier. Credentials Jenkins attendus :
 //    - dockerhub_rickknd    Username with password (pseudo Docker Hub + ACCESS TOKEN)
 //    - mysql-root-password  Secret text (mot de passe root de la base déployée)
+//    - nexus-credentials    Username with password (compte Nexus autorisé à publier)
 //    - token SonarQube      déjà relié au serveur « sonarqube » (Configurer le système)
 //  Prérequis VM : (les tests utilisent une base H2 en mémoire, aucun MySQL requis)
-//                 utilisateur jenkins dans le groupe docker.
+//                 utilisateur jenkins dans le groupe docker ;
+//                 kubeconfig de Minikube dans /var/lib/jenkins/.kube/config ;
+//                 Secret spring-secret et MySQL déjà présents dans le namespace devops (atelier 8).
 // =====================================================================================
 pipeline {
     agent any
@@ -50,6 +56,9 @@ pipeline {
         SONAR_KEY      = 'DevOps-AppGestionDesProjets'
         COMPOSE_PROJECT = 'gestion-projets'
         APP_HOST       = 'localhost'
+        NEXUS_URL      = 'http://localhost:8081'
+        NEXUS_CREDS    = 'nexus-credentials'
+        K8S_NAMESPACE  = 'devops'
     }
 
     stages {
@@ -176,6 +185,28 @@ pipeline {
         }
 
         // ---------------------------------------------------------------- 9
+        stage('Deploy to Nexus') {
+            when { branch 'main' }
+            steps {
+                echo "==> Publication du jar dans Nexus (maven-releases, version 1.0.${TAG})"
+                // une version par build : un dépôt « releases » refuse de republier une version existante,
+                // et 1.0.<build> relie l'artefact Nexus au tag Docker du même build
+                dir('backend') {
+                    withCredentials([usernamePassword(credentialsId: env.NEXUS_CREDS,
+                            usernameVariable: 'NEXUS_USER', passwordVariable: 'NEXUS_PASSWORD')]) {
+                        sh '''
+                            ./mvnw -B -s ../ci/maven-settings.xml deploy:deploy-file \
+                              -DgroupId=tn.esprit -DartifactId=backend -Dversion=1.0.$TAG \
+                              -Dpackaging=jar -Dfile=$(ls target/backend-*.jar) -DgeneratePom=true \
+                              -DrepositoryId=nexus -Durl=$NEXUS_URL/repository/maven-releases/
+                        '''
+                    }
+                }
+                echo "Artefact : ${env.NEXUS_URL}/#browse/browse:maven-releases:tn%2Fesprit%2Fbackend"
+            }
+        }
+
+        // ---------------------------------------------------------------- 10
         stage('Compte Docker Hub') {
             when { anyOf { branch 'main'; branch 'develop' } }
             steps {
@@ -226,20 +257,23 @@ pipeline {
             }
         }
 
-        // ---------------------------------------------------------------- 10
+        // ---------------------------------------------------------------- 11
         stage('Docker Push') {
             when { branch 'main' }
             steps {
                 echo '==> Publication des images sur Docker Hub (tag du build + latest)'
                 withCredentials([usernamePassword(credentialsId: env.DOCKERHUB_CREDS,
                         usernameVariable: 'DH_USER', passwordVariable: 'DH_TOKEN')]) {
-                    sh '''
-                        echo "$DH_TOKEN" | docker login -u "$DH_USER" --password-stdin
-                        docker push $BACKEND_IMAGE:$TAG
-                        docker push $BACKEND_IMAGE:latest
-                        docker push $FRONTEND_IMAGE:$TAG
-                        docker push $FRONTEND_IMAGE:latest
-                    '''
+                    // le réseau de la VM coupe parfois quelques secondes : 3 essais avant d'abandonner
+                    retry(3) {
+                        sh '''
+                            echo "$DH_TOKEN" | docker login -u "$DH_USER" --password-stdin
+                            docker push $BACKEND_IMAGE:$TAG
+                            docker push $BACKEND_IMAGE:latest
+                            docker push $FRONTEND_IMAGE:$TAG
+                            docker push $FRONTEND_IMAGE:latest
+                        '''
+                    }
                 }
                 echo "Images visibles sur https://hub.docker.com/u/${env.DOCKERHUB_USER}"
             }
@@ -250,8 +284,8 @@ pipeline {
             }
         }
 
-        // ---------------------------------------------------------------- 11
-        stage('Deploy') {
+        // ---------------------------------------------------------------- 12
+        stage('Deploy Compose') {
             when { branch 'main' }
             steps {
                 echo '==> Déploiement : 3 conteneurs (mysql, backend, frontend) via Docker Compose'
@@ -265,7 +299,47 @@ pipeline {
             }
         }
 
-        // ---------------------------------------------------------------- 12
+        // ---------------------------------------------------------------- 13
+        stage('Deploy Backend') {
+            when { branch 'main' }
+            steps {
+                echo "==> Déploiement du backend sur Kubernetes : ${BACKEND_IMAGE}:${TAG}"
+                // approche déclarative : le manifeste versionné dans Git est appliqué avec l'image du build
+                sh '''
+                    kubectl get namespace $K8S_NAMESPACE
+                    kubectl get secret spring-secret -n $K8S_NAMESPACE > /dev/null
+                    sed "s#image: .*gp-backend.*#image: $BACKEND_IMAGE:$TAG#" k8s/backend.yaml | kubectl apply -f -
+                    kubectl rollout status deployment/spring -n $K8S_NAMESPACE --timeout=420s
+                    kubectl get pods -n $K8S_NAMESPACE -l app=spring -o wide
+                '''
+            }
+            post {
+                failure {
+                    // l'ancienne version reprend la main : l'application reste disponible
+                    sh 'kubectl rollout undo deployment/spring -n $K8S_NAMESPACE || true'
+                }
+            }
+        }
+
+        // ---------------------------------------------------------------- 14
+        stage('Deploy Frontend') {
+            when { branch 'main' }
+            steps {
+                echo "==> Déploiement du frontend sur Kubernetes : ${FRONTEND_IMAGE}:${TAG}"
+                sh '''
+                    sed "s#image: .*gp-frontend.*#image: $FRONTEND_IMAGE:$TAG#" k8s/frontend.yaml | kubectl apply -f -
+                    kubectl rollout status deployment/frontend -n $K8S_NAMESPACE --timeout=300s
+                    kubectl get pods,svc -n $K8S_NAMESPACE
+                '''
+            }
+            post {
+                failure {
+                    sh 'kubectl rollout undo deployment/frontend -n $K8S_NAMESPACE || true'
+                }
+            }
+        }
+
+        // ---------------------------------------------------------------- 15
         stage('Smoke Tests') {
             when { branch 'main' }
             steps {
@@ -286,6 +360,16 @@ pipeline {
                     curl -sf -o /dev/null -w "HTTP %{http_code}\\n" http://$APP_HOST:4200/
                     echo "--- Front -> API : proxy /api"
                     curl -sf -o /dev/null -w "HTTP %{http_code}\\n" http://$APP_HOST:4200/api/entreprise/all
+
+                    echo "===== Kubernetes ====="
+                    K8S_IP=$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[0].address}')
+                    echo "--- API  : GET /entreprise/all (NodePort 30081)"
+                    curl -sf http://$K8S_IP:30081/entreprise/all
+                    echo
+                    echo "--- Front : page d'accueil (NodePort 30080)"
+                    curl -sf -o /dev/null -w "HTTP %{http_code}\\n" http://$K8S_IP:30080/
+                    echo "--- Front -> API : nginx -> Service backend -> pods Spring"
+                    curl -sf -o /dev/null -w "HTTP %{http_code}\\n" http://$K8S_IP:30080/api/entreprise/all
                 '''
             }
         }
@@ -297,7 +381,7 @@ pipeline {
             ============================================================
              SUCCÈS – ${env.BRANCH_NAME} @ ${env.GIT_SHORT} (build #${env.BUILD_NUMBER})
              Durée : ${currentBuild.durationString}
-             ${env.BRANCH_NAME == 'main' ? 'Application : http://<IP-VM>:4200   API : http://<IP-VM>:8089' : 'Intégration validée (pas de déploiement sur cette branche)'}
+             ${env.BRANCH_NAME == 'main' ? 'Compose : http://<IP-VM>:4200 (API :8089)   Kubernetes : NodePort 30080 (API :30081)' : 'Intégration validée (pas de déploiement sur cette branche)'}
             ============================================================
             """
         }

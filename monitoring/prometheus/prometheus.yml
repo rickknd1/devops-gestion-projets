@@ -1,0 +1,42 @@
+# Prometheus vient "relever les compteurs" de chaque cible toutes les 15 s (modèle pull)
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  # La VM (CPU, RAM, disque)
+  - job_name: vm
+    static_configs:
+      - targets: ["node-exporter:9100"]
+
+  # Chaque conteneur Docker de la VM
+  - job_name: conteneurs
+    static_configs:
+      - targets: ["cadvisor:8080"]
+
+  # Jenkins, via le plugin "Prometheus metrics" (builds réussis/échoués, durées, file d'attente)
+  # Jenkins tourne sur la VM, hors Docker : on passe par l'IP privée de la VM
+  - job_name: jenkins
+    metrics_path: /prometheus/
+    static_configs:
+      - targets: ["192.168.33.10:8080"]
+
+  # Backend Spring déployé par le pipeline (docker compose, port 8089)
+  - job_name: spring-compose
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: ["192.168.33.10:8089"]
+        labels:
+          environnement: compose
+
+  # Backend Spring dans Minikube (NodePort 30081 ; le Service répartit entre les 2 pods)
+  - job_name: spring-kubernetes
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: ["192.168.49.2:30081"]
+        labels:
+          environnement: kubernetes
